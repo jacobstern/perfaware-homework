@@ -1,23 +1,52 @@
 #!/usr/bin/env node
 
-const process = require('process');
-const fs = require('fs');
+const { readFileSync } = require('node:fs');
 
-const EFFECTIVE_ADDRESS_TABLE = ['bx + si', 'bx + di', 'bp + si', 'bp + di', 'si', 'di', 'bp', 'bx'];
+const EFFECTIVE_ADDRESS_TABLE = [
+    'bx + si',
+    'bx + di',
+    'bp + si',
+    'bp + di',
+    'si',
+    'di',
+    'bp',
+    'bx',
+];
 
-const REGISTER_BYTE_NAMES_TABLE = ['al', 'cl', 'dl', 'bl', 'ah', 'ch', 'dh', 'bh'];
-const REGISTER_WORD_NAMES_TABLE = ['ax', 'cx', 'dx', 'bx', 'sp', 'bp', 'si', 'di'];
+const REGISTER_BYTE_NAMES_TABLE = [
+    'al',
+    'cl',
+    'dl',
+    'bl',
+    'ah',
+    'ch',
+    'dh',
+    'bh',
+];
+const REGISTER_WORD_NAMES_TABLE = [
+    'ax',
+    'cx',
+    'dx',
+    'bx',
+    'sp',
+    'bp',
+    'si',
+    'di',
+];
 
-const REGISTER_NAMES_TABLE_LOOKUP = [REGISTER_BYTE_NAMES_TABLE, REGISTER_WORD_NAMES_TABLE];
+const REGISTER_NAMES_TABLE_LOOKUP = [
+    REGISTER_BYTE_NAMES_TABLE,
+    REGISTER_WORD_NAMES_TABLE,
+];
 
-function parseRegisterOrMemoryToOrFromRegister(buffer, offset) {
+function parseRegisterOrMemoryToOrFromRegister(buffer, offset, op) {
     const firstByte = buffer[offset];
     const secondByte = buffer[offset + 1];
-    const w = firstByte & 0x01;
+    const w = firstByte & 0b00000001;
     const registerNames = REGISTER_NAMES_TABLE_LOOKUP[w];
-    const reg = (secondByte & 0x38) >> 3;
+    const reg = (secondByte & 0b00111000) >> 3;
     const registerName = registerNames[reg];
-    const rm = secondByte & 0x07;
+    const rm = secondByte & 0b00000111;
     const mod = secondByte >> 6;
     let variableOperand, consumed;
     if (mod === 3) {
@@ -43,100 +72,85 @@ function parseRegisterOrMemoryToOrFromRegister(buffer, offset) {
             consumed = 2;
         }
     }
-    const d = (firstByte & 0x02) >> 1;
-    const direction = d ? 'variableToRegister' : 'registerToVariable';
+    const d = (firstByte & 0b00000010) >> 1;
+    const registerOperand = { type: 'register', registerName };
     const instruction = {
-        type: 'registerOrMemoryToOrFromRegister',
-        registerName,
-        variableOperand,
-        direction,
+        type: 'binaryOp',
+        op,
+        source: d ? variableOperand : registerOperand,
+        destination: d ? registerOperand : variableOperand,
     };
     return [consumed, instruction];
 }
 
-function parseImmediateToRegisterOrMemory(buffer, offset) {
+function parseImmediateToRegister(buffer, offset, op) {
     const firstByte = buffer[offset];
-    const w = (firstByte & 0x08) >> 3;
-    const reg = firstByte & 0x07;
+    const w = (firstByte & 0b00001000) >> 3;
+    const reg = firstByte & 0b00000111;
     const registerName = REGISTER_NAMES_TABLE_LOOKUP[w][reg];
-    let consumed, immediate;
+    let consumed, value;
     if (w) {
+        value = buffer.readIntLE(offset + 1, 2);
         consumed = 3;
-        immediate = buffer.readIntLE(offset + 1, 2);
     } else {
+        value = buffer.readInt8(offset + 1);
         consumed = 2;
-        immediate = buffer.readInt8(offset + 1);
     }
     const instruction = {
-        type: 'immediateToRegisterOrMemory',
-        registerName,
-        immediate,
+        type: 'binaryOp',
+        op,
+        destination: { type: 'register', registerName },
+        source: { type: 'immediate', value },
     };
     return [consumed, instruction];
 }
 
 function parseInstruction(buffer, offset) {
     const firstByte = buffer[offset];
-    if ((firstByte & 0xFC) === 0x88) {
-        return parseRegisterOrMemoryToOrFromRegister(buffer, offset);
+    if ((firstByte & 0b11111100) === 0b10001000) {
+        return parseRegisterOrMemoryToOrFromRegister(buffer, offset, 'mov');
     }
-    if ((firstByte & 0xF0) === 0xB0) {
-        return parseImmediateToRegisterOrMemory(buffer, offset);
+    if ((firstByte & 0b11110000) === 0b10110000) {
+        return parseImmediateToRegister(buffer, offset, 'mov');
     }
-    console.error('Failed to parse opcode from 0x%s', firstByte.toString(16));
+    console.error(`Failed to parse opcode from ${firstByte.toString(2)}`);
     process.exit(1);
 }
 
-function printImmediateToRegisterOrMemory(instruction) {
-    const { registerName, immediate } = instruction;
-    console.log('mov %s, %i', registerName, immediate);
-}
-
-function printRegisterOrMemoryToOrFromRegister(instruction) {
-    const { registerName, variableOperand, direction } = instruction;
-    let variableOperandString;
-    switch (variableOperand.type) {
-        case 'register': {
-            const { registerName } = variableOperand;
-            variableOperandString = registerName;
-            break;
-        }
-        case 'effectiveAddress': {
-            const { base, displacement } = variableOperand;
+function operandToString(operand) {
+    switch (operand.type) {
+        case 'register':
+            return operand.registerName;
+        case 'immediate':
+            return operand.value.toString();
+        case 'directAddress':
+            return `[${operand.address}]`;
+        case 'effectiveAddress':
+            const { base, displacement } = operand;
             if (displacement) {
                 const sign = displacement > 0 ? '+' : '-';
-                const magnitude = Math.abs(displacement);
-                variableOperandString = `[${base} ${sign} ${magnitude}]`;
-            } else {
-                variableOperandString = `[${base}]`;
+                return `[${base} ${sign} ${Math.abs(displacement)}]`;
             }
-            break;
-        }
-        case 'directAddress': {
-            const { address } = variableOperand;
-            variableOperandString `[${address}]`;
-            break;
-        }
+            return `[${base}]`;
         default:
-            break;
+            return operand.toString();
     }
-    if (direction === 'variableToRegister') {
-        console.log('mov %s, %s', registerName, variableOperandString);
-    } else {
-        console.log('mov %s, %s', variableOperandString, registerName);
-    }
+}
+
+function printBinaryOp(instruction) {
+    const { op, destination, source } = instruction;
+    const destinationString = operandToString(destination);
+    const sourceString = operandToString(source);
+    console.log(`${op} ${destinationString}, ${sourceString}`);
 }
 
 function printAssembly(inFile, instructions) {
-    console.log('; %s disassembly:', inFile);
+    console.log(`; ${inFile} disassembly:`);
     console.log('bits 16');
     for (const instruction of instructions) {
         switch (instruction.type) {
-            case 'immediateToRegisterOrMemory':
-                printImmediateToRegisterOrMemory(instruction);
-                break;
-            case 'registerOrMemoryToOrFromRegister':
-                printRegisterOrMemoryToOrFromRegister(instruction);
+            case 'binaryOp':
+                printBinaryOp(instruction);
                 break;
             default:
                 break;
@@ -146,23 +160,17 @@ function printAssembly(inFile, instructions) {
 
 function main() {
     const inFile = process.argv[2];
+    const buffer = readFileSync(inFile);
 
-    fs.readFile(inFile, (err, buffer) => {
-        if (err) {
-            console.error(err.message);
-            process.exit(1);
-        }
-    
-        let offset = 0;
-        const instructions = [];
-        while (offset < buffer.length) {
-            const [consumed, instruction] = parseInstruction(buffer, offset);
-            offset += consumed;
-            instructions.push(instruction);
-        }
-    
-        printAssembly(inFile, instructions);
-    });    
+    let offset = 0;
+    const instructions = [];
+    while (offset < buffer.length) {
+        const [consumed, instruction] = parseInstruction(buffer, offset);
+        offset += consumed;
+        instructions.push(instruction);
+    }
+
+    printAssembly(inFile, instructions);
 }
 
 main();
