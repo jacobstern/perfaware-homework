@@ -3,3 +3,6 @@ part1/listing_0038_many_register_mov
 part1/listing_0037_single_register_mov
 part1/listing_0039_more_movs
 part1/listing_0040_challenge_movs
+part1/listing_0041_add_sub_cmp_jnz
+
+.mypy_cache/

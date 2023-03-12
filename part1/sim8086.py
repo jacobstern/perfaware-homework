@@ -1,4 +1,7 @@
+import itertools
+from pathlib import Path
 import sys
+from typing import Iterator
 
 D_MASK   = 0b00000010
 MOD_MASK = 0b11000000
@@ -31,16 +34,27 @@ IMM_REG_OPCODE = 0b10110000
 W_BYTE = 0
 W_WORD = 1
 
+RM_DIRECT_ADDRESS = 0b110
 EFFECTIVE_ADDRESS_TAB = ['bx + si', 'bx + di', 'bp + si', 'bp + di', 'si', 'di', 'bp', 'bx']
 
 REG_BYTE_NAMES = ['al', 'cl', 'dl', 'bl', 'ah', 'ch', 'dh', 'bh']
 REG_WORD_NAMES = ['ax', 'cx', 'dx', 'bx', 'sp', 'bp', 'si', 'di']
 REG_NAMES_W_TAB = [REG_BYTE_NAMES, REG_WORD_NAMES]
 
-def decompile_reg_mem(instr_bytes: bytes, i: int) -> int:
-    fst = instr_bytes[i]
-    snd = instr_bytes[i + 1]
-    consumed = 2
+def parse_immediate(instr: Iterator[int], n=1, signed=True) -> int:
+    return int.from_bytes(
+        itertools.islice(instr, n), signed=signed,
+        byteorder='little')
+
+def print_disp(base: str, disp: int) -> str:
+    if disp == 0:
+        return base
+    sign = '-' if disp < 0 else '+'
+    quantity = abs(disp)
+    return f'{base} {sign} {quantity}'
+
+def disassemble_reg_mem(fst: int, instr: Iterator[int]) -> None:
+    snd = next(instr)
     mod = snd & MOD_MASK
     reg = (snd & REG_MEM_REG_MASK) >> REG_MEM_REG_BITSHIFT
     rm = snd & RM_MASK
@@ -51,11 +65,11 @@ def decompile_reg_mem(instr_bytes: bytes, i: int) -> int:
     else:
         base = EFFECTIVE_ADDRESS_TAB[rm]
         if mod == MOD_MEM_DISP_BYTE:
-            addr = f'{base} + {instr_bytes[i + 2]}'
-            consumed += 1
+            addr = print_disp(base, parse_immediate(instr, n=1))
         elif mod == MOD_MEM_DISP_WORD:
-            addr = f'{base} + {instr_bytes[i + 2] + (instr_bytes[i + 3] << 8)}'
-            consumed += 2
+            addr = print_disp(base, parse_immediate(instr, n=2))
+        elif rm == RM_DIRECT_ADDRESS:
+            addr = str(parse_immediate(instr, n=2, signed=False))
         else:
             addr = base
         variable_operand = f'[{addr}]'
@@ -64,36 +78,26 @@ def decompile_reg_mem(instr_bytes: bytes, i: int) -> int:
     else:
         src_operand, dst_operand = variable_operand, reg_operand
     print(f'mov {dst_operand}, {src_operand}')
-    return consumed
 
-def decompile_imm_reg(instr_bytes: bytes, i: int) -> int:
-    fst = instr_bytes[i]
-    consumed = 2
+def disassemble_imm_reg(fst: int, instr: Iterator[int]) -> None:
     w = (fst & IMM_REG_W_MASK) >> IMM_REG_W_BITSHIFT
     dst_operand = REG_NAMES_W_TAB[w][fst & IMM_REG_REG_MASK]
-    if w == W_WORD:
-        src_operand = f'{instr_bytes[i + 1] + (instr_bytes[i + 2] << 8)}'
-        consumed += 1
-    else:
-        src_operand = f'{instr_bytes[i + 1]}'
+    src_operand = str(parse_immediate(instr, 2 if w == W_WORD else 1))
     print(f'mov {dst_operand}, {src_operand}')
-    return consumed
 
 def main():
     instr_file = sys.argv[1]
-    with open(instr_file, 'rb') as f:
-        instr_bytes = f.read()
+    instr_bytes = Path(instr_file).read_bytes()
+    instr = iter(instr_bytes)
 
     print(f'; {instr_file} disassembly:')
     print('bits 16')
 
-    i = 0
-    while i < len(instr_bytes):
-        fst = instr_bytes[i]
+    for fst in instr:
         if fst & REG_MEM_OPCODE_MASK == REG_MEM_OPCODE:
-            i += decompile_reg_mem(instr_bytes, i)
+            disassemble_reg_mem(fst, instr)
         elif fst & IMM_REG_OPCODE_MASK == IMM_REG_OPCODE:
-            i += decompile_imm_reg(instr_bytes, i)
+            disassemble_imm_reg(fst, instr)
         else:
             raise RuntimeError(f'Failed to parse opcode from {fst:#0x}')
 
