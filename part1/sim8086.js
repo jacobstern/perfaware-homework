@@ -67,6 +67,10 @@ class ParseError extends Error {
     }
 }
 
+function asSignAndMagnitude(n) {
+    return [n >= 0 ? '+' : '-', Math.abs(n)];
+}
+
 function parseVariableOperand(buffer, offset) {
     const firstByte = buffer[offset];
     const secondByte = buffer[offset + 1];
@@ -175,7 +179,7 @@ function parseImmediateToAccumulator(buffer, offset, op) {
         op,
         destination: { type: 'register', registerName },
         source: { type: 'immediate', value },
-    }
+    };
     return [size + 1, instruction];
 }
 
@@ -244,8 +248,8 @@ function operandToString(operand) {
         case 'effectiveAddress':
             const { base, displacement } = operand;
             if (displacement) {
-                const sign = displacement > 0 ? '+' : '-';
-                return `[${base} ${sign} ${Math.abs(displacement)}]`;
+                const [sign, magnitude] = asSignAndMagnitude(displacement);
+                return `[${base} ${sign} ${magnitude}]`;
             }
             return `[${base}]`;
     }
@@ -307,10 +311,10 @@ function main() {
     const inFile = process.argv[2];
     const buffer = readFileSync(inFile);
 
-    let offset = 0, parseError = null;
+    let offset = 0,
+        parseError = null;
     const instructions = [];
-    while (offset < buffer.length)
-    {
+    while (offset < buffer.length) {
         try {
             const [consumed, instruction] = parseInstruction(buffer, offset);
             instructions.push({ offset, size: consumed, instruction });
